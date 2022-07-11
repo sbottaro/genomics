@@ -56,7 +56,7 @@ process split_align_mark{
     
     done
     
-    ###################################
+m    ###################################
     # MARK DUPLICATES
 
     ls -latr ${sample_ID}.*_map.bam | awk '{print "-I "\$9}' > ${sample_ID}_mapped_bams.list.txt
@@ -403,9 +403,11 @@ process applyVqsrSNP {
 
 process mutect2{
 
+    cpus 4
+    memory '20 GB'
+
     input:
-    path(tumor_bam)
-    path(normal_bam)
+    tuple val(sample_name), path(tumor_bam), path(normal_bam)
     path(interval_list)
     path(resource_dir)
     
@@ -420,22 +422,26 @@ process mutect2{
     
     script:
     """
-    picard BedToIntervalList -I ${interval_list} -O interval_list.interval_list  -SD ${params.reference_genome}
 
     tumor_bamfile=`ls ${tumor_bam} | grep -v .bai`
+    tumor_name=`basename -s ${params.bam_suffix} \${tumor_bamfile}`
+
     normal_bamfile=`ls ${normal_bam} | grep -v .bai`
+    normal_name=`basename -s ${params.bam_suffix} \${normal_bamfile}`
+    
     gatk Mutect2 -R ${params.reference_genome} \
-        -L interval_list.interval_list --ip ${params.interval_padding}\
+        -L ${params.interval_list} --ip ${params.interval_padding}\
         -I \${tumor_bamfile} \
-        -tumor ${params.tumor_id} \
+        -tumor \${tumor_name} \
 	-I \${normal_bamfile} \
-        -normal ${params.normal_id} \
+        -normal \${normal_name} \
         -germline-resource ${params.allele_frequency_file} \
         -pon ${params.panel_of_normal_file}  \
         --f1r2-tar-gz f1r2.tar.gz \
-        -O unfiltered.vcf
+        -O unfiltered.vcf --native-pair-hmm-threads ${task.cpus}
     """
 }
+
 
 
 process learn_orientation{
@@ -448,7 +454,7 @@ process learn_orientation{
     
     script:
     """
-    gatk LearnReadOrientationModel -I $f1r2 -O read-orientation-model.tar.gz
+    gatk LearnReadOrientationModel -I ${f1r2} -O read-orientation-model.tar.gz
     """
 
 }
@@ -457,27 +463,33 @@ process learn_orientation{
 process pileup{
 
     input:
-    path(tumor_bam)
-    path(normal_bam)
+    tuple val(sample_name), path(tumor_bam), path(normal_bam)
+    path(resource_dir)
 
 
     output:
-    path("tumor_getpileupsummaries.table"), emit: tumor_pileup
-    path("normal_getpileupsummaries.table"), emit: normal_pileup
+    path("tumor_pileupsummaries.table"), emit: tumor_pileup
+    path("normal_pileupsummaries.table"), emit: normal_pileup
     
     script:
     """
-    gatk GetPileupSummaries \
-	-I ${tumor_bam} \
-	-V ${params.get_pileup_interval} \
-	-L ${params.get_pileup_interval} --ip ${params.interval_padding} \
-	-O tumor_getpileupsummaries.table
+
+    tumor_bamfile=`ls ${tumor_bam} | grep -v .bai`
+
+    normal_bamfile=`ls ${normal_bam} | grep -v .bai`
 
     gatk GetPileupSummaries \
-	-I ${normal_bam} \
-	-V ${params.get_pileup_interval} \
-	-L ${params.get_pileup_interval} --ip ${params.interval_padding}\
-	-O normal_getpileupsummaries.table    
+	-I \${tumor_bamfile} \
+	-V ${params.pileup_interval} \
+	-L ${params.pileup_interval} --ip ${params.interval_padding} \
+	-O tumor_pileupsummaries.table & 
+
+    gatk GetPileupSummaries \
+	-I \${normal_bamfile} \
+	-V ${params.pileup_interval} \
+	-L ${params.pileup_interval} --ip ${params.interval_padding}\
+	-O normal_pileupsummaries.table  &
+    wait
     """
 
 }
@@ -507,18 +519,20 @@ process calculate_contamination{
 //Finally, pass the learned read orientation model to FilterMutectCallswith the -ob-priors argument:
 process filter_mutect{
 
-    publishDir "${params.pair_ID}/mutect2/", mode: "move"
+    publishDir "${params.project_name}/mutect2/", mode: "copy"
     
     input:
+    tuple val(sample_name), path(tumor_bam), path(normal_bam)    
     path(unfiltered)
     path(f1r2)
     path(stats)
     path(segmentation_table)
     path(contamination_table)
-
+    path(resource_dir)
+    
     output:
-    path("filtered.vcf")
-    path("unfiltered.vcf")
+    path("${sample_name}.mutect2.filtered.vcf"), emit: filtered_vcf
+    path("${sample_name}.mutect2.unfiltered.vcf"), emit: unfiltered_vcf
     
     script:
     """
@@ -527,9 +541,8 @@ process filter_mutect{
         --tumor-segmentation ${segmentation_table} \
         --contamination-table ${contamination_table} \
         --ob-priors ${f1r2} \
-	--stats ${stats}  -O filtered.vcf
-    touch ${unfiltered}
-
+	--stats ${stats}  -O ${sample_name}.mutect2.filtered.vcf
+    cp ${unfiltered} ${sample_name}.mutect2.unfiltered.vcf  
     """
     
 }

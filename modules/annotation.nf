@@ -17,8 +17,17 @@ process vep_annotation {
     script:
 
     """
+
+    if [[ "${vcf}" = *.gz ]]; then
+    bb=`basename -s .vcf.gz ${vcf}`
+    elif [[ "${vcf}" = *.vcf ]]; then
+    bb=`basename -s .vcf.gz ${vcf}`                       
+    else 
+	printf "Not a valid vcf file, exiting." 
+    false 
+    fi
     tabix -f ${vcf} 
-    bb=`basename ${vcf}`
+
     /opt/vep/src/ensembl-vep/vep --cache \
 	--refseq \
 	-i ${vcf}\
